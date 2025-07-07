@@ -1,0 +1,9 @@
+# Together AI API Key - Get yours at https://together.ai/
+TOGETHER_API_KEY=your_together_ai_api_key_here
+
+# Database Configuration
+DB_PATH=data/pbp_db
+SCHEMA_FILE=schema_context.txt
+
+# Optional: Logging Level (DEBUG, INFO, WARNING, ERROR)
+LOG_LEVEL=INFO 

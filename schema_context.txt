@@ -1,4 +1,4 @@
--- nflfastR_pbp is the play by play table for each game since 1999--
+-- nflfastR_pbp is the play by play table for each game since 1999. Use team_stats table below for team stats questions which aggregates by each game. --
 play_id: REAL
 game_id: TEXT
 old_game_id: TEXT
@@ -417,7 +417,7 @@ qb_id: TEXT
 qb_name: TEXT
 qb_epa_roll16: REAL
 
--- pregame_matchups has the team stats data for each team up to but not including the current game--
+-- pregame_matchups has the team stats data for each team up to but not including the current game. Only use this for game matchup specific questions - not team stats--
 year: INTEGER
 gameid: TEXT
 home_team: TEXT

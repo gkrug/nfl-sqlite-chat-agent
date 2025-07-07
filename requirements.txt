@@ -1,5 +1,6 @@
-### requirements.txt
 streamlit
 langchain
-openai
+langchain-together
+langchain-community
+ddgs
 python-dotenv
