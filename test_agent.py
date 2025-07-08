@@ -7,7 +7,8 @@ Run this to verify the agent is working correctly before using the web interface
 import os
 import time
 from dotenv import load_dotenv
-from agent import run_query_hybrid, get_debug_logs, get_agent
+from agent import run_query_hybrid, get_debug_logs, get_agent, run_query
+import unittest
 
 def test_agent():
     """Test the agent with sample queries using the hybrid approach."""
@@ -165,10 +166,21 @@ def test_specific_scenarios():
         else:
             print(f"✅ Answer: {answer[:200]}{'...' if len(answer) > 200 else ''}")
 
+class TestNFLStatAgent(unittest.TestCase):
+    def test_most_passing_tds_last_2_min_2024(self):
+        question = "what quarterback scored the most passing touchdowns in the last 2 minutes of regular season games in 2024"
+        answer, error, reasoning = run_query(question)
+        self.assertIsNone(error)
+        self.assertIn("J.Daniels", answer)
+        self.assertIn("4", answer)
+
 if __name__ == "__main__":
     # Run main test
     success = test_agent()
     
     # Run specific scenario tests
     if success:
-        test_specific_scenarios() 
+        test_specific_scenarios()
+    
+    # Run unit tests
+    unittest.main() 

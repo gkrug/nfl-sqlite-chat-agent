@@ -57,8 +57,9 @@ class NFLStatAgent:
 
             self._db = SQLDatabase.from_uri(f"sqlite:///{db_path}")
 
-            # Load schema context
-            schema_file = os.getenv("SCHEMA_FILE", "schema_context.txt")
+            # Load the full nflfastR_pbp schema (not schema_context.txt or others)
+            self._schema_context = ""
+            schema_file = "schema/schema_nflfastR_pbp.txt"
             if os.path.exists(schema_file):
                 with open(schema_file, "r") as f:
                     self._schema_context = f.read()
@@ -67,15 +68,13 @@ class NFLStatAgent:
             api_key = os.getenv("TOGETHER_API_KEY")
             if not api_key:
                 raise ValueError("TOGETHER_API_KEY environment variable is required")
-            
-            # Use Llama-3-8B for database (default)
+            # Use a model with larger context window for database queries
             self._llm = Together(
-                model="deepseek-ai/deepseek-coder-33b-instruct",
+                model="mistralai/Mixtral-8x7B-Instruct-v0.1",
                 temperature=0.2,
                 max_tokens=2048,
                 together_api_key=api_key
             )
-
             # Use Llama-3-70B for web search synthesis
             self._web_llm = Together(
                 model="meta-llama/Llama-3-70b-chat-hf",
@@ -83,11 +82,9 @@ class NFLStatAgent:
                 max_tokens=2048,
                 together_api_key=api_key
             )
-
             # Create SQL database toolkit and tools
             sql_toolkit = SQLDatabaseToolkit(db=self._db, llm=self._llm)
             sql_tools = sql_toolkit.get_tools()
-
             # Create web search tool using ddgs
             web_tools = [
                 Tool(
@@ -96,7 +93,6 @@ class NFLStatAgent:
                     description="Useful for finding current NFL news, recent game results, player injuries, trades, and information not available in the historical database. Use this for questions about current events, recent games, or breaking news."
                 )
             ]
-
             # Create database agent
             self._agent_executor = initialize_agent(
                 tools=sql_tools,
@@ -107,7 +103,6 @@ class NFLStatAgent:
                 max_iterations=3,
                 early_stopping_method="generate"
             )
-
             # Create web search agent with Llama-3-70B
             self._web_agent_executor = initialize_agent(
                 tools=web_tools,
@@ -118,7 +113,6 @@ class NFLStatAgent:
                 max_iterations=3,
                 early_stopping_method="generate"
             )
-
             self._initialized = True
             logger.info("NFLStatAgent initialized successfully with database and web search capabilities")
         except Exception as e:
@@ -222,13 +216,10 @@ class NFLStatAgent:
             return "team_stats"
 
     def _get_appropriate_table_context(self, question: str) -> str:
-        """Always use the nflfastR_pbp table for all queries."""
-        try:
-            with open("schema/schema_nflfastR_pbp.txt", 'r') as f:
-                schema_content = f.read()
-            return f"Use the nflfastR_pbp table with the following schema:\n\n{schema_content}"
-        except FileNotFoundError:
-            logger.error("Schema file schema/schema_nflfastR_pbp.txt not found")
+        """Always use the nflfastR_pbp table for all queries with the full schema."""
+        if self._schema_context:
+            return f"Use the nflfastR_pbp table with the following schema:\n\n{self._schema_context}"
+        else:
             return "Use the nflfastR_pbp table (schema file not found)"
 
     def _run_database_query(self, question: str) -> Tuple[str, Optional[str]]:
@@ -236,63 +227,50 @@ class NFLStatAgent:
         try:
             table_context = self._get_appropriate_table_context(question)
             
-            full_prompt = f"""You are a helpful assistant that answers questions using the NFL play-by-play database.
+            full_prompt = f"""Answer this NFL question using the database: {question}
 
 {table_context}
 
-CRITICAL RULES FOR nflfastR_pbp TABLE:
+CRITICAL SQL RULES:
+1. QUARTERBACK QUERIES:
+   - Use passer_player_name (NOT posteam_player_name or player_name)
+   - For passing touchdowns: use pass_touchdown = 1 (NOT touchdown)
+   - Group by passer_player_name for quarterback stats
 
-1. TEAM STATISTICS REQUIREMENT:
-   - For offensive team stats (passing yards, rushing yards, touchdowns, etc.), use the posteam field
-   - posteam indicates which team has possession and should be credited with offensive stats
-   - DO NOT use home_team/away_team for offensive statistics - this will double-count
-   - Use simple GROUP BY posteam for offensive team stats
+2. TIME-BASED QUERIES:
+   - Last 2 minutes: game_seconds_remaining BETWEEN 0 AND 120
+   - Last 5 minutes: game_seconds_remaining BETWEEN 0 AND 300
+   - Last quarter: game_seconds_remaining BETWEEN 0 AND 900
 
-2. REGULAR SEASON FILTERING:
-   - Unless specifically asked about playoffs, ALWAYS filter for regular season games
-   - Use WHERE week BETWEEN 1 AND 18 (NFL regular season is weeks 1-18)
-   - This ensures you're not including playoff games in regular season stats
-   - Example: WHERE season = 2023 AND week BETWEEN 1 AND 18
+3. SEASON FILTERING:
+   - 2024 regular season: WHERE season = 2024 AND week BETWEEN 1 AND 18
+   - 2023 regular season: WHERE season = 2023 AND week BETWEEN 1 AND 18
 
-3. CORRECT PATTERN FOR OFFENSIVE TEAM STATS:
-   ```sql
-   SELECT posteam as team, SUM(stat_column) as total_stat
-   FROM nflfastR_pbp 
-   WHERE season = 2023 AND week BETWEEN 1 AND 18
-   GROUP BY posteam
-   ORDER BY total_stat DESC
-   ```
+4. PLAY TYPE FILTERING:
+   - Passing plays: play_type = 'pass'
+   - Rushing plays: play_type = 'run'
+   - All plays: no play_type filter needed
 
-4. SPECIFIC EXAMPLES:
-   - Passing yards: SUM(passing_yards) WHERE posteam = team
-   - Rushing yards: SUM(rushing_yards) WHERE posteam = team
-   - Touchdowns: SUM(pass_touchdown + rush_touchdown) WHERE posteam = team
-   - Interceptions: SUM(interception) WHERE posteam = team
-   - Sacks: SUM(sack) WHERE defteam = team (defensive stat)
+5. TOUCHDOWN TYPES:
+   - Passing touchdowns: pass_touchdown = 1
+   - Rushing touchdowns: rush_touchdown = 1
+   - All touchdowns: touchdown = 1
 
-5. SEASON FILTERING:
-   - Use WHERE season = 2023 (not year)
-   - For multiple seasons: WHERE season IN (2022, 2023)
-   - Always combine with week filter: WHERE season = 2023 AND week BETWEEN 1 AND 18
+6. TEAM vs PLAYER STATS:
+   - Team offensive stats: GROUP BY posteam
+   - Player stats: GROUP BY passer_player_name (passing) or rusher_player_name (rushing)
 
-6. PLAYER STATS:
-   - For player queries, use player_name column
-   - Filter by posteam for offensive player stats
-   - Filter by defteam for defensive player stats
+EXAMPLE QUERIES:
+- QB passing TDs: SELECT passer_player_name, COUNT(*) FROM nflfastR_pbp WHERE season=2024 AND week BETWEEN 1 AND 18 AND play_type='pass' AND pass_touchdown=1 GROUP BY passer_player_name
+- Last 2 min TDs: SELECT passer_player_name, COUNT(*) FROM nflfastR_pbp WHERE season=2024 AND week BETWEEN 1 AND 18 AND game_seconds_remaining BETWEEN 0 AND 120 AND pass_touchdown=1 GROUP BY passer_player_name
 
-7. GAME-LEVEL QUERIES:
-   - For game results, use home_score and away_score
-   - For specific games, use game_id
-   - For playoff queries, use week > 18
+IMPORTANT: Execute your SQL query and provide the actual result with the player name and count. Include the raw data from the query result in your answer so it can be formatted properly. Do not just show the SQL - give the final answer with the data.
 
-8. DEFENSIVE STATS:
-   - For defensive stats (sacks, interceptions against), use defteam field
-   - defteam indicates the defensive team
+FORMAT: After executing the query, include the raw result data in your answer like this:
+"Query result: [('Player1', 5), ('Player2', 3), ...]"
+Then provide your summary.
 
-Now answer the user's question:
-{question}
-
-Please show the SQL query you used to get your answer."""
+CRITICAL: You MUST include the actual query results in your answer. Do not make up generic responses like 'Player1 with X touchdowns'. Use the real data from the database."""
             if not self._agent_executor:
                 return "", "Database agent not initialized"
             buffer = StringIO()
@@ -307,7 +285,7 @@ Please show the SQL query you used to get your answer."""
 
     def run_query(self, question: str, show_reasoning: bool = False) -> Tuple[str, Optional[str], Optional[str]]:
         """
-        Execute a query using either database or web search based on the question type.
+        Execute a query using the hybrid approach: try database first, fall back to web search if needed.
         
         Args:
             question: The question to answer about NFL stats or current events
@@ -316,33 +294,7 @@ Please show the SQL query you used to get your answer."""
         Returns:
             Tuple of (answer, error, reasoning) where error is None if successful
         """
-        if not self._initialized:
-            return "", "Agent not initialized", None
-
-        try:
-            # Basic input validation
-            if not question or len(question.strip()) < 3:
-                return "", "Query is too short", None
-
-            # Clear previous debug output
-            self._debug_output = ""
-
-            # Determine whether to use database or web search
-            use_web_search = self._should_use_web_search(question)
-            
-            if use_web_search:
-                logger.info(f"Using web search for query: {question[:50]}...")
-                answer, error = self._run_web_search(question)
-            else:
-                logger.info(f"Using database for query: {question[:50]}...")
-                answer, error = self._run_database_query(question)
-
-            reasoning = self.get_debug_logs(latest_only=True) if show_reasoning else None
-            return answer, error, reasoning
-        except Exception as e:
-            error_msg = f"Error processing query: {str(e)}"
-            logger.error(error_msg)
-            return "", error_msg, None
+        return self.run_query_hybrid(question, show_reasoning=show_reasoning)
 
     def _run_web_search(self, question: str) -> Tuple[str, Optional[str]]:
         """Run a web search for current NFL information."""
@@ -406,7 +358,7 @@ Answer the user's question with current, factual information:
 
     def run_query_hybrid(self, question: str, show_reasoning: bool = False) -> Tuple[str, Optional[str], Optional[str]]:
         """
-        Hybrid approach: Try web search first for a direct, high-confidence answer. If the web answer is missing nuance, is low confidence, or says 'not found', fall back to the database. If the database answer is also low confidence or missing, return the best related web answer with a disclaimer about limitations.
+        Parallel approach: Query both database and web search simultaneously, then compare and select the best answer.
         """
         if not self._initialized:
             return "", "Agent not initialized", None
@@ -417,51 +369,172 @@ Answer the user's question with current, factual information:
 
             self._debug_output = ""
 
-            # Try web search first and save the answer
-            logger.info(f"Trying web search first for: {question[:50]}...")
-            web_answer, web_error = self._run_web_search(question)
+            # Run both agents in parallel
+            logger.info(f"Running both database and web search in parallel for: {question[:50]}...")
+            
+            import concurrent.futures
+            import time
+            
+            start_time = time.time()
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                # Submit both tasks
+                web_future = executor.submit(self._run_web_search, question)
+                db_future = executor.submit(self._run_database_query, question)
+                
+                # Get results
+                web_answer, web_error = web_future.result()
+                db_answer, db_error = db_future.result()
+            
+            execution_time = time.time() - start_time
+            logger.info(f"Both agents completed in {execution_time:.2f} seconds")
+            
             web_answer_clean = web_answer.strip() if web_answer else ""
-
-            # Heuristic: If web answer is direct, relevant, and matches nuance, use it
-            low_conf_phrases = [
-                "not found", "could not find", "no information", "no data", "not available", "couldn't find", "no answer"
-            ]
-            is_low_conf = (
-                not web_answer_clean or web_error or len(web_answer_clean) < 50 or
-                any(phrase in web_answer_clean.lower() for phrase in low_conf_phrases)
-            )
-            nuance_keywords = ["road", "away", "visitor", "on the road"]
-            if not is_low_conf:
-                if any(word in question.lower() for word in nuance_keywords):
-                    if any(word in web_answer_clean.lower() for word in nuance_keywords):
-                        logger.info("Web search provided nuanced answer, using it")
-                        return web_answer_clean, None, "Used web search for nuanced stat lookup"
-                else:
-                    logger.info("Web search provided good answer, using it")
-                    return web_answer_clean, None, "Used web search for quick stat lookup"
-
-            # If web answer is low confidence or missing nuance, try database
-            logger.info("Web search was low confidence or missing nuance, trying database...")
-            db_answer, db_error = self._run_database_query(question)
             db_answer_clean = db_answer.strip() if db_answer else ""
-
-            # Heuristic: If DB answer is plausible (not empty, not huge, not zero), use it
-            plausible = db_answer_clean and not db_error and len(db_answer_clean) > 10 and not any(x in db_answer_clean for x in ["999", "1035", "0 road games", "no data"])
-            if plausible:
-                logger.info("Database provided plausible answer, using it")
-                return db_answer_clean, None, "Used database for detailed analysis"
-
-            # If DB answer is low confidence or missing, return best web answer with disclaimer
-            if web_answer_clean:
-                disclaimer = "No direct answer was found in the database. Here is the closest related stat from the web, but it may not exactly match your question:\n"
-                return disclaimer + web_answer_clean, None, "DB fallback failed, using best web answer with disclaimer"
+            
+            # Score and compare answers
+            web_score = self._score_answer(web_answer_clean, web_error, "web")
+            db_score = self._score_answer(db_answer_clean, db_error, "database")
+            
+            logger.info(f"Web score: {web_score}, Database score: {db_score}")
+            
+            # Select best answer
+            if db_score > web_score and db_score > 0:
+                logger.info("Database provided better answer, using it")
+                return db_answer_clean, None, f"Used database (score: {db_score}) - better than web (score: {web_score})"
+            elif web_score > 0:
+                logger.info("Web search provided better answer, using it")
+                return web_answer_clean, None, f"Used web search (score: {web_score}) - better than database (score: {db_score})"
             else:
-                return "No direct answer was found in the database or on the web.", None, "No answer found"
+                # Both failed, return best available with disclaimer
+                if web_answer_clean:
+                    disclaimer = "Neither source provided a high-confidence answer. Here is the best available information from the web:\n"
+                    return disclaimer + web_answer_clean, None, "Both sources low confidence, using best web answer"
+                elif db_answer_clean:
+                    disclaimer = "Neither source provided a high-confidence answer. Here is the best available information from the database:\n"
+                    return disclaimer + db_answer_clean, None, "Both sources low confidence, using best database answer"
+                else:
+                    return "No answer found from either database or web search.", None, "No answer found from either source"
 
         except Exception as e:
-            error_msg = f"Hybrid agent error: {str(e)}"
+            error_msg = f"Parallel agent error: {str(e)}"
             logger.error(error_msg)
             return "", error_msg, None
+
+    def _score_answer(self, answer: str, error: Optional[str], source: str) -> float:
+        """
+        Score an answer based on various quality metrics.
+        Higher score = better answer.
+        """
+        if error or not answer:
+            return 0.0
+        
+        score = 0.0
+        
+        # Base score for having an answer
+        score += 10.0
+        
+        # Length bonus (but not too long)
+        if 50 <= len(answer) <= 500:
+            score += 5.0
+        elif len(answer) > 500:
+            score += 2.0  # Penalty for very long answers
+        
+        # Specificity bonus
+        if any(word in answer.lower() for word in ["quarterback", "team", "player", "touchdown", "yard", "game", "season"]):
+            score += 3.0
+        
+        # Number presence bonus (for statistical queries)
+        if re.search(r'\d+', answer):
+            score += 2.0
+        
+        # Source credibility bonus
+        if source == "database":
+            score += 5.0  # Database is generally more reliable for stats
+        elif source == "web":
+            if any(source in answer.lower() for source in ["espn", "nfl.com", "pro-football-reference", "statmuse"]):
+                score += 3.0
+        
+        # Penalty for low confidence indicators
+        low_conf_phrases = [
+            "not found", "could not find", "no information", "no data", "not available", 
+            "couldn't find", "no answer", "insert name here", "unknown"
+        ]
+        if any(phrase in answer.lower() for phrase in low_conf_phrases):
+            score -= 10.0
+        
+        # Penalty for implausible numbers (very high stats that seem unrealistic)
+        if source == "web":
+            # Check for implausibly high numbers that might be misinterpreted
+            numbers = re.findall(r'\d+', answer)
+            for num in numbers:
+                num_int = int(num)
+                if num_int > 100:  # Very high numbers might be season totals, not specific stats
+                    score -= 2.0
+        
+        return max(0.0, score)
+
+    def _format_tabular_data(self, answer: str) -> str:
+        """
+        Convert tabular data in the answer to markdown table format.
+        """
+        # Look for patterns that indicate tabular data
+        # Pattern 1: List of tuples like [("A.O'Connell", 2), ('A.Richardson', 2), ...]
+        tuple_pattern = r'\[\(([^)]+)\),\s*\(([^)]+)\)(?:,\s*\(([^)]+)\))*\]'
+        
+        # Pattern 2: Multiple lines with | separators
+        table_pattern = r'([^|]+\|[^|]+(?:\|[^|]+)*)'
+        
+        # Pattern 3: Data in parentheses format
+        paren_pattern = r'\(([^)]+)\)'
+        
+        # Try to extract and format tuple data
+        if '[' in answer and ']' in answer and '(' in answer and ')' in answer:
+            # Extract the tuple data
+            start = answer.find('[')
+            end = answer.find(']')
+            if start != -1 and end != -1:
+                tuple_data = answer[start:end+1]
+                
+                # Parse the tuples
+                import ast
+                try:
+                    data_list = ast.literal_eval(tuple_data)
+                    if isinstance(data_list, list) and len(data_list) > 0:
+                        # Create markdown table
+                        table_lines = []
+                        
+                        # Determine headers based on first item
+                        if len(data_list[0]) == 2:
+                            headers = ["Player", "Count"]
+                        elif len(data_list[0]) == 3:
+                            headers = ["Player", "Stat1", "Stat2"]
+                        else:
+                            headers = [f"Column{i+1}" for i in range(len(data_list[0]))]
+                        
+                        # Add header
+                        table_lines.append("| " + " | ".join(headers) + " |")
+                        table_lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+                        
+                        # Add data rows
+                        for row in data_list:
+                            formatted_row = []
+                            for item in row:
+                                if item is None:
+                                    formatted_row.append("N/A")
+                                else:
+                                    formatted_row.append(str(item))
+                            table_lines.append("| " + " | ".join(formatted_row) + " |")
+                        
+                        # Replace the tuple data with the markdown table
+                        markdown_table = "\n".join(table_lines)
+                        formatted_answer = answer.replace(tuple_data, f"\n\n{markdown_table}\n\n")
+                        return formatted_answer
+                        
+                except (ValueError, SyntaxError):
+                    pass
+        
+        return answer
 
 @lru_cache(maxsize=1)
 def get_agent() -> NFLStatAgent:
