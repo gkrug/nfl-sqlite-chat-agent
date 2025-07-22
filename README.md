@@ -1,6 +1,6 @@
 # 🏈 NFL Stat Agent
 
-An interactive AI-powered agent that answers questions about NFL team and play statistics using a local SQLite database derived from [nflfastR](https://github.com/nflverse/nflfastR). It uses an LLM agent to translate natural language questions into SQL queries and return intelligent, grounded responses. Now features blazing-fast web search, caching, and optimized hybrid routing.
+An intelligent AI-powered agent that answers questions about NFL statistics and current events using a hybrid approach combining historical play-by-play data and real-time web search. The agent uses advanced filtering, parallel execution, and smart answer selection to provide accurate, up-to-date responses.
 
 ## 🔍 Use Cases
 
@@ -22,44 +22,99 @@ Ask questions like:
 
 ## ✨ Features
 
-- **Dual Data Sources**: Combines historical database with real-time web search
-- **Smart Query Routing**: Automatically chooses database or web search based on question type, with direct routing for clear web queries
-- **Web Search Caching**: Caches web search results for repeated queries (blazing fast)
-- **Natural Language to SQL**: Converts questions to SQL queries using LangChain
+- **Hybrid Data Sources**: Combines historical nflfastR play-by-play database with real-time web search
+- **Intelligent Filtering**: Two-stage filtering system (keyword pre-screening + LLM validation) for NFL relevance
+- **Parallel Execution**: Simultaneous database and web search for optimal performance
+- **Smart Answer Selection**: Comprehensive scoring system to select the best answer from multiple sources
+- **Natural Language to SQL**: Converts questions to SQL queries using LangChain with enhanced schema context
 - **Current NFL News**: Access to latest injury updates, trades, and game results via DuckDuckGo (`ddgs`)
 - **Interactive Web Interface**: Beautiful Streamlit UI with query history and response time display
-- **Real-time Debug Output**: See the agent's reasoning process
-- **Schema-Aware Queries**: Uses comprehensive database schema context
+- **Real-time Debug Output**: See the agent's reasoning process and answer scoring
+- **Enhanced Schema Context**: Comprehensive field descriptions with data types for better SQL generation
 - **Query History**: Save and reuse previous queries
 - **Error Handling**: Graceful fallbacks and timeout protection
-- **Optimized LLM**: Uses Together AI's `meta-llama/Llama-3-8b-chat-hf` for fast, reliable inference
+- **Optimized LLMs**: Uses Together AI's Mixtral-8x7B for database queries and Llama-3-70B for web synthesis
 
 ## 🧠 Tech Stack
 
-- **LangChain** - SQL agent orchestration and tool management
-- **Together AI** (`meta-llama/Llama-3-8b-chat-hf`) - LLM for natural language processing
-- **ddgs (DuckDuckGo Search)** - Web search for current NFL information (fast, modern)
+- **LangChain** - Agent orchestration and tool management
+- **Together AI** - Multiple LLMs for different tasks:
+  - **Mixtral-8x7B** - Database queries and SQL generation
+  - **Llama-3-70B** - Web search synthesis and complex reasoning
+- **ddgs (DuckDuckGo Search)** - Web search for current NFL information
 - **Streamlit** - Interactive web interface
-- **SQLite** - Local database with NFL play-by-play data
+- **SQLite** - Local database with nflfastR play-by-play data
 - **nflfastR** - Source of comprehensive NFL statistics
+
+## 🏗️ Agent Architecture
+
+### Flow Overview
+
+The agent uses a sophisticated multi-stage approach to provide accurate answers:
+
+```
+1. Keyword Filter (Stage 1)
+   ↓
+2. LLM Query Classifier (Stage 2) - Only if Stage 1 inconclusive
+   ↓
+3. Parallel SQL and Web Execution
+   ↓
+4. Rating and Selecting Best Answer
+```
+
+### Detailed Flow
+
+#### **Stage 1: Keyword Pre-screening**
+- **Purpose**: Fast filtering for obvious NFL vs non-NFL cases
+- **Method**: `_stage1_keyword_pre_screen()`
+- **Logic**: Checks for core NFL terms (team names, players, football terms) vs obvious non-NFL terms
+- **Output**: `(is_relevant, reason, is_conclusive)`
+
+#### **Stage 2: LLM Classifier**
+- **Purpose**: Only used when Stage 1 is inconclusive
+- **Method**: `_stage2_llm_classifier()`
+- **Logic**: Minimal LLM call with simple Y/N response for edge cases
+- **Output**: `(is_relevant, reason)`
+
+#### **Stage 3: Parallel Execution**
+- **Purpose**: Run both database and web search simultaneously
+- **Method**: `run_query_hybrid()` with `ThreadPoolExecutor`
+- **Database**: `_run_database_query()` - SQL queries against nflfastR_pbp table
+- **Web Search**: `_run_web_search()` - Web search for current NFL information
+
+#### **Stage 4: Answer Selection**
+- **Purpose**: Score and select the best answer
+- **Method**: `_score_answer()`
+- **Scoring Factors**:
+  - Base score (10 points)
+  - Length bonus (5 points for 50-500 chars)
+  - Specificity bonus (3 points for NFL terms)
+  - Number presence (2 points for stats)
+  - Source credibility (5 points for database, 3 for reputable web sources)
+  - Penalties for implausible numbers, coaching questions, low confidence phrases
 
 ## 📁 Project Structure
 
 ```
 nflStatsAgent/
-├── agent.py              # Core agent logic with LangChain integration
-├── app.py                # Streamlit web interface
-├── explore.py            # Database schema extraction utility
-├── schema_context.txt    # Database schema documentation
-├── requirements.txt      # Python dependencies
-├── setup.py              # Automated setup script
-├── test_agent.py         # Agent testing utility
-├── test_routing.py       # Query routing logic testing
-├── query_examples.md     # Query examples and routing guide
-├── config.example        # Example configuration file
+├── agent.py                    # Core agent logic with hybrid architecture
+├── app.py                      # Streamlit web interface
+├── landing_page.py             # Landing page for the application
+├── sunday_spread.py            # Sunday spread analysis utility
+├── explore.py                  # Database exploration utility
+├── getDescriptions.R           # R script to generate field descriptions
+├── requirements.txt            # Python dependencies
+├── setup.py                    # Automated setup script
+├── config.example              # Example configuration file
+├── query_examples.md           # Query examples and usage guide
+├── schema/
+│   ├── schema_nflfastR_pbp.txt # nflfastR play-by-play schema
+│   ├── field_descriptions.json # Enhanced field descriptions with data types
+│   ├── schema_team_stats.txt   # Team stats schema (legacy)
+│   └── schema_pregame_matchups.txt # Pregame matchups schema (legacy)
 ├── data/
-│   └── pbp_db           # SQLite database (2GB)
-└── README.md            # This file
+│   └── pbp_db                  # SQLite database (2GB)
+└── README.md                   # This file
 ```
 
 ## 🚀 Quick Start
@@ -114,7 +169,7 @@ python setup.py
 
 ## 📊 Database Schema
 
-The application uses a comprehensive NFL database with the following main tables:
+The application uses the comprehensive nflfastR play-by-play database with enhanced field descriptions:
 
 ### `nflfastR_pbp` (Play-by-Play Data)
 - **Game Information**: `game_id`, `home_team`, `away_team`, `week`, `season_type`
@@ -122,10 +177,13 @@ The application uses a comprehensive NFL database with the following main tables
 - **Player Stats**: `passer_player_name`, `rusher_player_name`, `receiver_player_name`
 - **Advanced Metrics**: `epa`, `wpa`, `air_yards`, `yards_after_catch`
 - **Situational Data**: `quarter`, `time`, `score_differential`
+- **Enhanced Context**: Complete field descriptions with data types in `schema/field_descriptions.json`
 
-### `team_stats` (Aggregated Team Statistics)
-- Team-level aggregations for easier analysis
-- Win/loss records, scoring, and performance metrics
+### Schema Context
+The agent uses comprehensive schema context including:
+- **Original Schema**: `schema/schema_nflfastR_pbp.txt` with example queries and important notes
+- **Field Descriptions**: `schema/field_descriptions.json` with detailed descriptions and data types for all 200+ fields
+- **SQL Rules**: Built-in critical SQL rules for quarterback queries, time-based filtering, and team statistics
 
 ## 🎯 Example Queries
 
@@ -168,26 +226,45 @@ The application uses a comprehensive NFL database with the following main tables
 
 ### Agent Settings
 
-The agent is optimized for speed and reliability:
+The agent uses multiple optimized LLMs for different tasks:
 
 ```python
+# Database queries and SQL generation
 self._llm = Together(
-    model="meta-llama/Llama-3-8b-chat-hf",  # Fast, serverless LLM
-    temperature=0.2,                        # Creativity level (0-1)
+    model="mistralai/Mixtral-8x7B-Instruct-v0.1",
+    temperature=0.2,
     max_tokens=2048,
-    together_api_key=os.getenv("TOGETHER_API_KEY")
+    together_api_key=api_key
+)
+
+# Web search synthesis and complex reasoning
+self._web_llm = Together(
+    model="meta-llama/Llama-3-70b-chat-hf",
+    temperature=0.2,
+    max_tokens=2048,
+    together_api_key=api_key
+)
+
+# Fast classification (minimal tokens)
+self._classifier_llm = Together(
+    model="mistralai/Mixtral-8x7B-Instruct-v0.1",
+    temperature=0.1,
+    max_tokens=3,  # Very small for Y/N responses
+    together_api_key=api_key
 )
 ```
 
-- **Web search** uses the `ddgs` package for fast, reliable DuckDuckGo results.
-- **Caching** is enabled for web search queries.
-- **Tool routing** is optimized: clear web queries bypass the agent for instant answers.
+- **Parallel execution** runs database and web search simultaneously
+- **Smart filtering** uses two-stage approach for NFL relevance
+- **Answer scoring** selects the best response from multiple sources
 
 ## ⚡ Performance
 
-- **Web search**: ~0.3s (cached or direct)
-- **Database queries**: ~2s (LLM + SQL)
-- **Hybrid/complex queries**: ~2-5s
+- **Keyword filtering**: ~0.01s (instant pre-screening)
+- **LLM classification**: ~0.5s (only for inconclusive cases)
+- **Parallel execution**: ~2-3s (both database and web search simultaneously)
+- **Answer scoring**: ~0.1s (comprehensive quality assessment)
+- **Total response time**: ~2-4s for most queries
 
 ## 🛠️ Development
 
@@ -196,6 +273,7 @@ self._llm = Together(
 1. **Custom Tools**: Add new LangChain tools in `agent.py`
 2. **UI Enhancements**: Modify the Streamlit interface in `app.py`
 3. **Schema Updates**: Run `python explore.py` to regenerate schema context
+4. **Field Descriptions**: Run `Rscript getDescriptions.R` to update field descriptions
 
 ### Database Exploration
 
@@ -205,7 +283,15 @@ Use the `explore.py` script to extract and update the database schema:
 python explore.py
 ```
 
-This will regenerate `schema_context.txt` with the current database structure.
+### Field Descriptions
+
+Generate enhanced field descriptions with data types:
+
+```bash
+Rscript getDescriptions.R
+```
+
+This creates `schema/field_descriptions.json` with comprehensive field documentation.
 
 ### Debugging
 
