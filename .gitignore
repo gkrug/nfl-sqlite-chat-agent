@@ -1,7 +1,7 @@
 # .gitignore
 .env
 .env.*
-data/
+# data/  # Temporarily commented out for Railway deployment
 *.sqlite
 __pycache__/
 *.pyc
