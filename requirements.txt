@@ -4,3 +4,5 @@ langchain-together
 langchain-community
 ddgs
 python-dotenv
+gunicorn
+watchdog
